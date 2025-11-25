@@ -12,10 +12,14 @@ fun SettingsScreen(
     onBack: () -> Unit
 ) {
     val numColumns by viewModel.numColumnsFlow.collectAsState()
-    val numCards by remember { mutableStateOf(viewModel.numCards) }
+    val currentCards = viewModel.numCards
 
     var tempColumns by remember { mutableStateOf(numColumns) }
-    var tempCards by remember { mutableStateOf(numCards) }
+    var tempCards by remember { mutableStateOf(currentCards) }
+
+    var saveToCloud by remember {
+        mutableStateOf(viewModel.statsSaveLocation == GameViewModel.StatsSaveLocation.FIRESTORE)
+    }
 
     Column(
         modifier = Modifier
@@ -23,7 +27,6 @@ fun SettingsScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(24.dp)
     ) {
-
         TopBar(
             title = "Settings",
             showBackButton = true,
@@ -53,10 +56,31 @@ fun SettingsScreen(
             )
         }
 
-        Button(onClick = { viewModel.updateSettings(tempCards, tempColumns) }) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text("Save Stats to Firestore")
+            Switch(
+                checked = saveToCloud,
+                onCheckedChange = {
+                    saveToCloud = it
+                    viewModel.setSaveLocation(
+                        if (it) GameViewModel.StatsSaveLocation.FIRESTORE
+                        else GameViewModel.StatsSaveLocation.ROOM
+                    )
+                }
+            )
+        }
+
+        Button(
+            onClick = { viewModel.updateSettings(tempCards, tempColumns) }
+        ) {
             Text("Confirm")
         }
 
-        Button(onClick = { onBack() }) { Text("Back") }
+        Button(onClick = onBack) {
+            Text("Back")
+        }
     }
 }

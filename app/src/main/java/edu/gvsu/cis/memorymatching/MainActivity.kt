@@ -23,10 +23,9 @@ class MainActivity : ComponentActivity() {
             var playerName by remember { mutableStateOf("") }
             var showNameDialog by remember { mutableStateOf(true) }
 
-            // Initialize DB and load stats
             LaunchedEffect(Unit) {
                 gameViewModel.initDatabase(this@MainActivity)
-                gameViewModel.loadStatsFromDb()
+                gameViewModel.loadStats()
             }
 
             MaterialTheme {

@@ -3,6 +3,7 @@ package edu.gvsu.cis.memorymatching.ui
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,16 +18,22 @@ data class GameStat(
     val boardSize: String,
     val numMoves: Int,
     val duration: Int,
-    val completed: Boolean
+    val completed: Boolean,
+    val source: String
 )
 
 class GameViewModel : ViewModel() {
 
+    enum class StatsSaveLocation { ROOM, FIRESTORE }
+
+    var statsSaveLocation: StatsSaveLocation = StatsSaveLocation.ROOM
+    val gameCredits = "Ujjwal & Sidarth"
+
+    private val firestore = FirebaseFirestore.getInstance()
+
     var numCards = 16
     private var _numColumns = MutableStateFlow(4)
     val numColumnsFlow = _numColumns
-
-    val gameCredits = "Ujjwal & Sidarth"
 
     private var _cards = MutableStateFlow<List<Int>>(emptyList())
     val cards = _cards
@@ -50,12 +57,10 @@ class GameViewModel : ViewModel() {
     val duration = _duration
 
     private var lastTappedIndex: Int? = null
-    private var firstTap = true
     private var timerJob: Job? = null
 
     var currentPlayer = ""
 
-    // Matched colors for each card index
     private var _matchedColors = MutableStateFlow<MutableMap<Int, Color>>(mutableMapOf())
     val matchedColors = _matchedColors
 
@@ -66,20 +71,59 @@ class GameViewModel : ViewModel() {
         repository = GameStatsRepository(db.gameStatDao())
     }
 
-    fun loadStatsFromDb() {
+    fun loadStats() {
+        loadRoomStats()
+        loadFirestoreStats()
+    }
+
+    private fun loadRoomStats() {
         viewModelScope.launch {
             repository.allStats.collect { dbStats ->
-                _gameStats.value = dbStats.map {
+                val roomStats = dbStats.map {
                     GameStat(
                         playerName = it.playerName,
                         boardSize = it.boardSize,
                         numMoves = it.numMoves,
                         duration = it.duration,
-                        completed = it.completed
+                        completed = it.completed,
+                        source = "ROOM"
                     )
                 }
+                mergeStats(roomStats)
             }
         }
+    }
+
+    private fun loadFirestoreStats() {
+        firestore.collection("game_stats")
+            .addSnapshotListener { snapshot, e ->
+                if (e != null || snapshot == null) return@addSnapshotListener
+
+                val fireStats = snapshot.documents.mapNotNull { doc ->
+                    GameStat(
+                        playerName = doc.getString("playerName") ?: return@mapNotNull null,
+                        boardSize = doc.getString("boardSize") ?: "",
+                        numMoves = doc.getLong("numMoves")?.toInt() ?: 0,
+                        duration = doc.getLong("duration")?.toInt() ?: 0,
+                        completed = doc.getBoolean("completed") ?: false,
+                        source = "FIRESTORE"
+                    )
+                }
+                mergeStats(fireStats)
+            }
+    }
+
+    private fun mergeStats(newList: List<GameStat>) {
+        val existing = _gameStats.value.toMutableList()
+        existing.removeAll { old ->
+            newList.any {
+                it.playerName == old.playerName &&
+                        it.numMoves == old.numMoves &&
+                        it.duration == old.duration &&
+                        it.source == old.source
+            }
+        }
+        _gameStats.value = existing + newList
     }
 
     init { startNewGame() }
@@ -93,7 +137,6 @@ class GameViewModel : ViewModel() {
         _moves.value = 0
         _duration.value = 0
         lastTappedIndex = null
-        firstTap = true
         _isGameOver.value = false
         _matchedColors.value.clear()
 
@@ -107,59 +150,57 @@ class GameViewModel : ViewModel() {
     }
 
     fun tapCardAtIndex(index: Int) {
-        val currentCards = _cards.value
-        val currentFace = _faceUp.value
+        val faces = _faceUp.value
+        if (faces[index]) return
 
-        if (currentFace[index]) return
-
-        _faceUp.value = currentFace.mapIndexed { idx, face ->
-            if (idx == index) true else face
-        }.toMutableList()
+        _faceUp.value = faces.mapIndexed { idx, f -> if (idx == index) true else f }.toMutableList()
 
         if (lastTappedIndex != null) {
             _moves.value += 1
-            val firstIndex = lastTappedIndex!!
-            val secondIndex = index
+            val first = lastTappedIndex!!
+            val second = index
 
-            if (currentCards[firstIndex] == currentCards[secondIndex]) {
-                _matched.value = _matched.value.mapIndexed { idx, isMatched ->
-                    if (idx == firstIndex || idx == secondIndex) true else isMatched
-                }.toMutableList()
+            if (_cards.value[first] == _cards.value[second]) {
 
                 val randomColor = Color(
                     red = Random.nextFloat(),
                     green = Random.nextFloat(),
                     blue = Random.nextFloat()
                 )
-                _matchedColors.value[firstIndex] = randomColor
-                _matchedColors.value[secondIndex] = randomColor
+
+                _matched.value = _matched.value.mapIndexed { idx, m ->
+                    if (idx == first || idx == second) true else m
+                }.toMutableList()
+
+                _matchedColors.value[first] = randomColor
+                _matchedColors.value[second] = randomColor
 
             } else {
                 viewModelScope.launch {
-                    delay(500)
-                    _faceUp.value = _faceUp.value.mapIndexed { idx, face ->
-                        if (idx == firstIndex || idx == secondIndex) false else face
+                    delay(600)
+                    _faceUp.value = _faceUp.value.mapIndexed { idx, f ->
+                        if (idx == first || idx == second) false else f
                     }.toMutableList()
                 }
             }
 
             lastTappedIndex = null
-            firstTap = true
         } else {
             lastTappedIndex = index
-            firstTap = false
         }
 
         if (_matched.value.all { it }) {
             _isGameOver.value = true
             timerJob?.cancel()
+
             addGameStat(
                 GameStat(
                     playerName = currentPlayer,
                     boardSize = "$numCards cards",
                     numMoves = _moves.value,
                     duration = _duration.value,
-                    completed = true
+                    completed = true,
+                    source = "LOCAL"
                 )
             )
         }
@@ -168,11 +209,12 @@ class GameViewModel : ViewModel() {
     fun restart() {
         addGameStat(
             GameStat(
-                currentPlayer,
-                "$numCards cards",
-                _moves.value,
-                _duration.value,
-                completed = false
+                playerName = currentPlayer,
+                boardSize = "$numCards cards",
+                numMoves = _moves.value,
+                duration = _duration.value,
+                completed = false,
+                source = "LOCAL"
             )
         )
         startNewGame()
@@ -184,21 +226,44 @@ class GameViewModel : ViewModel() {
         startNewGame()
     }
 
+    private fun saveToFirestore(stat: GameStat) {
+        val map = hashMapOf(
+            "playerName" to stat.playerName,
+            "boardSize" to stat.boardSize,
+            "numMoves" to stat.numMoves,
+            "duration" to stat.duration,
+            "completed" to stat.completed
+        )
+        firestore.collection("game_stats").add(map)
+    }
+
     fun addGameStat(stat: GameStat) {
-        _gameStats.update { it + stat }
-        viewModelScope.launch {
-            repository.addStat(
-                GameStatEntity(
-                    playerName = stat.playerName,
-                    boardSize = stat.boardSize,
-                    numMoves = stat.numMoves,
-                    duration = stat.duration,
-                    completed = stat.completed
+        if (statsSaveLocation == StatsSaveLocation.ROOM) {
+            viewModelScope.launch {
+                repository.addStat(
+                    GameStatEntity(
+                        playerName = stat.playerName,
+                        boardSize = stat.boardSize,
+                        numMoves = stat.numMoves,
+                        duration = stat.duration,
+                        completed = stat.completed
+                    )
                 )
-            )
+            }
+        } else {
+            saveToFirestore(stat)
         }
     }
 
-    fun sortStatsByMoves() { _gameStats.update { it.sortedBy { s -> s.numMoves } } }
-    fun sortStatsByDuration() { _gameStats.update { it.sortedBy { s -> s.duration } } }
+    fun setSaveLocation(location: StatsSaveLocation) {
+        statsSaveLocation = location
+    }
+
+    fun sortStatsByMoves() {
+        _gameStats.update { it.sortedBy { s -> s.numMoves } }
+    }
+
+    fun sortStatsByDuration() {
+        _gameStats.update { it.sortedBy { s -> s.duration } }
+    }
 }
