@@ -16,3 +16,12 @@ local.properties
 /.gradle
 /.kotlin
 /caches
+
+
+.gradle/
+.kotlinc/
+.kotlin/
+build/
+caches/
+.idea/
+app/build/
